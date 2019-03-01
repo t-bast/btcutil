@@ -206,11 +206,9 @@ var ops = map[string]Operation{
 		v2 := s.Pop()
 
 		if v1 != v2 {
-			s.Push("0")
 			return errors.New("evaluated to false")
 		}
 
-		s.Push("1")
 		return nil
 	},
 
@@ -383,7 +381,13 @@ var ops = map[string]Operation{
 			return errors.New("OP_CHECKSIG requires two values on the stack")
 		}
 
-		_, err := checkSig(s)
+		ok, err := checkSig(s)
+		if ok {
+			s.Push("1")
+		} else {
+			s.Push("0")
+		}
+
 		return err
 	},
 	"OP_CHECKSIGVERIFY": func(s *Stack) error {
@@ -399,7 +403,13 @@ var ops = map[string]Operation{
 		return err
 	},
 	"OP_CHECKMULTISIG": func(s *Stack) error {
-		_, err := checkMultiSig(s)
+		ok, err := checkMultiSig(s)
+		if ok {
+			s.Push("1")
+		} else {
+			s.Push("0")
+		}
+
 		return err
 	},
 	"OP_CHECKMULTISIGVERIFY": func(s *Stack) error {
@@ -433,14 +443,7 @@ func checkSig(s *Stack) (bool, error) {
 		return false, errors.Wrap(err, "could not parse signature")
 	}
 
-	ok := sig.Verify(s.tx, pubKey)
-	if ok {
-		s.Push("1")
-	} else {
-		s.Push("0")
-	}
-
-	return ok, nil
+	return sig.Verify(s.tx, pubKey), nil
 }
 
 func checkMultiSig(s *Stack) (bool, error) {

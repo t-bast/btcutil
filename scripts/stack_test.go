@@ -68,9 +68,7 @@ func TestStack(t *testing.T) {
 					"OP_DROP",
 					"OP_TRUE",
 				},
-				[]string{
-					"0",
-				},
+				nil,
 				false,
 			}, {
 				"satisfied equal",
@@ -123,9 +121,7 @@ func TestStack(t *testing.T) {
 					"2",
 					"OP_EQUALVERIFY",
 				},
-				[]string{
-					"0",
-				},
+				nil,
 				false,
 			},
 			{
