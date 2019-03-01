@@ -392,21 +392,30 @@ var ops = map[string]Operation{
 		}
 
 		ok, err := checkSig(s)
-		if err != nil {
-			return err
-		}
 		if !ok {
 			return errors.New("invalid signature")
 		}
 
-		return nil
+		return err
+	},
+	"OP_CHECKMULTISIG": func(s *Stack) error {
+		_, err := checkMultiSig(s)
+		return err
+	},
+	"OP_CHECKMULTISIGVERIFY": func(s *Stack) error {
+		ok, err := checkMultiSig(s)
+		if !ok {
+			return errors.New("invalid signature")
+		}
+
+		return err
 	},
 }
 
 func checkSig(s *Stack) (bool, error) {
 	pkBytes, err := hex.DecodeString(s.Pop())
 	if err != nil {
-		return false, errors.Wrap(err, "stack value should be a hex string")
+		return false, errors.Wrap(err, "public key should be a hex string")
 	}
 
 	pubKey, err := btcec.ParsePubKey(pkBytes, btcec.S256())
@@ -416,7 +425,7 @@ func checkSig(s *Stack) (bool, error) {
 
 	sigBytes, err := hex.DecodeString(s.Pop())
 	if err != nil {
-		return false, errors.Wrap(err, "stack value should be a hex string")
+		return false, errors.Wrap(err, "signature should be a hex string")
 	}
 
 	sig, err := btcec.ParseSignature(sigBytes, btcec.S256())
@@ -432,4 +441,80 @@ func checkSig(s *Stack) (bool, error) {
 	}
 
 	return ok, nil
+}
+
+func checkMultiSig(s *Stack) (bool, error) {
+	// The original implementation has a bug and pops one more element than
+	// needed.
+	// I'm choosing not to implement compatibility with that bug since this is
+	// only meant to be a learning experiment.
+	if s.Size() < 1 {
+		return false, errors.New("OP_CHECKMULTISIG requires a value for N on the stack")
+	}
+
+	n, err := s.PopInt()
+	if err != nil {
+		return false, errors.Wrap(err, "could not parse value of N")
+	}
+
+	if s.Size() < int(n) {
+		return false, fmt.Errorf("OP_CHECKMULTISIG needs %d public keys", n)
+	}
+
+	pubKeys := make([]*btcec.PublicKey, n)
+	for i := 0; i < int(n); i++ {
+		pkBytes, err := hex.DecodeString(s.Pop())
+		if err != nil {
+			return false, errors.Wrap(err, "public key should be a hex string")
+		}
+
+		pubKeys[i], err = btcec.ParsePubKey(pkBytes, btcec.S256())
+		if err != nil {
+			return false, errors.Wrap(err, "could not parse public key")
+		}
+	}
+
+	if s.Size() < 1 {
+		return false, errors.New("OP_CHECKMULTISIG requires a value for M on the stack")
+	}
+
+	m, err := s.PopInt()
+	if err != nil {
+		return false, errors.Wrap(err, "could not parse value of M")
+	}
+
+	if s.Size() < int(m) {
+		return false, fmt.Errorf("OP_CHECKMULTISIG needs %d signatures", m)
+	}
+
+	sigs := make([]*btcec.Signature, m)
+	for i := 0; i < int(m); i++ {
+		sigBytes, err := hex.DecodeString(s.Pop())
+		if err != nil {
+			return false, errors.Wrap(err, "signature should be a hex string")
+		}
+
+		sigs[i], err = btcec.ParseSignature(sigBytes, btcec.S256())
+		if err != nil {
+			return false, errors.Wrap(err, "could not parse signature")
+		}
+	}
+
+	// Very naive, can be optimized.
+	for _, sig := range sigs {
+		valid := false
+
+		for _, pubKey := range pubKeys {
+			valid = sig.Verify(s.tx, pubKey)
+			if valid {
+				break
+			}
+		}
+
+		if !valid {
+			return false, nil
+		}
+	}
+
+	return true, nil
 }
