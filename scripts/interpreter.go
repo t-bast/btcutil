@@ -50,6 +50,11 @@ func (i *TxInputInterpreter) Validate() (Interpreter, error) {
 
 // Evaluate the script.
 func (i *TxInputInterpreter) Evaluate() bool {
-	// TODO
-	return false
+	stack := InitStack().WithTxBytes(i.signedBytes)
+	ok := stack.ExecuteUnlock(i.unlockScript)
+	if !ok {
+		return false
+	}
+
+	return stack.Execute(i.lockScript)
 }
