@@ -1,13 +1,21 @@
 package scripts
 
 import (
-	"errors"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strconv"
+
+	"github.com/btcsuite/btcd/btcec"
+	"github.com/pkg/errors"
+
+	"golang.org/x/crypto/ripemd160"
 )
 
 // Stack is the execution stack of a Bitcoin script.
 type Stack struct {
+	tx     []byte
 	values []string
 }
 
@@ -18,6 +26,13 @@ type Operation func(*Stack) error
 // InitStack initializes an empty stack.
 func InitStack() *Stack {
 	return &Stack{}
+}
+
+// WithTxBytes sets the transaction bytes for signature verification.
+func (s *Stack) WithTxBytes(b []byte) *Stack {
+	s.tx = make([]byte, len(b))
+	copy(s.tx, b)
+	return s
 }
 
 // Pop one value from the stack.
@@ -64,7 +79,7 @@ func (s *Stack) execute(script []string) error {
 			}
 
 			if err := op(s); err != nil {
-				return err
+				return errors.Wrap(err, "operation failed")
 			}
 		} else {
 			s.values = append(s.values, val)
@@ -117,6 +132,7 @@ func isOpCode(val string) bool {
 
 // Apply the given opcode.
 var ops = map[string]Operation{
+	// Pushing values to the stack.
 	"OP_TRUE": func(s *Stack) error {
 		s.Push("1")
 		return nil
@@ -125,6 +141,26 @@ var ops = map[string]Operation{
 		s.Push("0")
 		return nil
 	},
+
+	// Conditional statements.
+	"OP_VERIFY": func(s *Stack) error {
+		if s.Size() < 1 {
+			return errors.New("OP_EQUALVERIFY requires a value on the stack")
+		}
+
+		v := s.Pop()
+
+		if v != "1" {
+			return errors.New("evaluated to false")
+		}
+
+		return nil
+	},
+	"OP_RETURN": func(s *Stack) error {
+		return errors.New("OP_RETURN halts execution")
+	},
+
+	// Stack operations.
 	"OP_DUP": func(s *Stack) error {
 		if s.Size() == 0 {
 			return nil
@@ -136,25 +172,6 @@ var ops = map[string]Operation{
 
 		return nil
 	},
-	"OP_ADD": func(s *Stack) error {
-		if s.Size() < 2 {
-			return errors.New("OP_ADD requires two values on the stack")
-		}
-
-		v1, err := s.PopInt()
-		if err != nil {
-			return err
-		}
-
-		v2, err := s.PopInt()
-		if err != nil {
-			return err
-		}
-
-		s.Push(strconv.FormatInt(v1+v2, 10))
-
-		return nil
-	},
 	"OP_DROP": func(s *Stack) error {
 		if s.Size() > 0 {
 			s.Pop()
@@ -162,6 +179,8 @@ var ops = map[string]Operation{
 
 		return nil
 	},
+
+	// Binary arithmetic and conditionals.
 	"OP_EQUAL": func(s *Stack) error {
 		if s.Size() < 2 {
 			return errors.New("OP_EQUAL requires two values on the stack")
@@ -194,4 +213,223 @@ var ops = map[string]Operation{
 		s.Push("1")
 		return nil
 	},
+
+	// Numeric operators.
+	"OP_ADD": func(s *Stack) error {
+		if s.Size() < 2 {
+			return errors.New("OP_ADD requires two values on the stack")
+		}
+
+		v1, err := s.PopInt()
+		if err != nil {
+			return errors.Wrap(err, "stack value isn't a number")
+		}
+
+		v2, err := s.PopInt()
+		if err != nil {
+			return errors.Wrap(err, "stack value isn't a number")
+		}
+
+		s.Push(strconv.FormatInt(v1+v2, 10))
+
+		return nil
+	},
+	"OP_NOT": func(s *Stack) error {
+		if s.Size() < 1 {
+			return errors.New("OP_NOT requires a value on the stack")
+		}
+
+		v := s.Pop()
+		if v == "0" {
+			s.Push("1")
+		} else {
+			s.Push("0")
+		}
+
+		return nil
+	},
+	"OP_SUB": func(s *Stack) error {
+		if s.Size() < 2 {
+			return errors.New("OP_SUB requires two values on the stack")
+		}
+
+		v1, err := s.PopInt()
+		if err != nil {
+			return errors.Wrap(err, "stack value isn't a number")
+		}
+
+		v2, err := s.PopInt()
+		if err != nil {
+			return errors.Wrap(err, "stack value isn't a number")
+		}
+
+		s.Push(strconv.FormatInt(v2-v1, 10))
+
+		return nil
+	},
+	"OP_BOOLAND": func(s *Stack) error {
+		if s.Size() < 2 {
+			return errors.New("OP_BOOLAND requires two values on the stack")
+		}
+
+		b1 := s.Pop()
+		b2 := s.Pop()
+
+		if b1 == "1" && b2 == "1" {
+			s.Push("1")
+		} else {
+			s.Push("0")
+		}
+
+		return nil
+	},
+	"OP_BOOLOR": func(s *Stack) error {
+		if s.Size() < 2 {
+			return errors.New("OP_BOOLOR requires two values on the stack")
+		}
+
+		b1 := s.Pop()
+		b2 := s.Pop()
+
+		if b1 == "1" || b2 == "1" {
+			s.Push("1")
+		} else {
+			s.Push("0")
+		}
+
+		return nil
+	},
+
+	// Cryptographic operations.
+	"OP_RIPEMD160": func(s *Stack) error {
+		if s.Size() < 1 {
+			return errors.New("OP_RIPEMD160 requires a value on the stack")
+		}
+
+		v, err := hex.DecodeString(s.Pop())
+		if err != nil {
+			return errors.Wrap(err, "stack value should be a hex string")
+		}
+
+		vv := hex.EncodeToString(ripemd160.New().Sum(v))
+		s.Push(vv)
+
+		return nil
+	},
+	"OP_SHA1": func(s *Stack) error {
+		if s.Size() < 1 {
+			return errors.New("OP_SHA1 requires a value on the stack")
+		}
+
+		v, err := hex.DecodeString(s.Pop())
+		if err != nil {
+			return errors.Wrap(err, "stack value should be a hex string")
+		}
+
+		vv := sha1.Sum(v)
+		s.Push(hex.EncodeToString(vv[:]))
+
+		return nil
+	},
+	"OP_SHA256": func(s *Stack) error {
+		if s.Size() < 1 {
+			return errors.New("OP_SHA256 requires a value on the stack")
+		}
+
+		v, err := hex.DecodeString(s.Pop())
+		if err != nil {
+			return errors.Wrap(err, "stack value should be a hex string")
+		}
+
+		vv := sha256.Sum256(v)
+		s.Push(hex.EncodeToString(vv[:]))
+
+		return nil
+	},
+	"OP_HASH160": func(s *Stack) error {
+		if s.Size() < 1 {
+			return errors.New("OP_HASH160 requires a value on the stack")
+		}
+
+		v, err := hex.DecodeString(s.Pop())
+		if err != nil {
+			return errors.Wrap(err, "stack value should be a hex string")
+		}
+
+		h1 := sha256.Sum256(v)
+		h2 := ripemd160.New().Sum(h1[:])
+		s.Push(hex.EncodeToString(h2))
+
+		return nil
+	},
+	"OP_HASH256": func(s *Stack) error {
+		if s.Size() < 1 {
+			return errors.New("OP_HASH256 requires a value on the stack")
+		}
+
+		v, err := hex.DecodeString(s.Pop())
+		if err != nil {
+			return errors.Wrap(err, "stack value should be a hex string")
+		}
+
+		h1 := sha256.Sum256(v)
+		h2 := sha256.Sum256(h1[:])
+		s.Push(hex.EncodeToString(h2[:]))
+
+		return nil
+	},
+	"OP_CHECKSIG": func(s *Stack) error {
+		if s.Size() < 2 {
+			return errors.New("OP_CHECKSIG requires two values on the stack")
+		}
+
+		_, err := checkSig(s)
+		return err
+	},
+	"OP_CHECKSIGVERIFY": func(s *Stack) error {
+		if s.Size() < 2 {
+			return errors.New("OP_CHECKSIGVERIFY requires two values on the stack")
+		}
+
+		ok, err := checkSig(s)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("invalid signature")
+		}
+
+		return nil
+	},
+}
+
+func checkSig(s *Stack) (bool, error) {
+	pkBytes, err := hex.DecodeString(s.Pop())
+	if err != nil {
+		return false, errors.Wrap(err, "stack value should be a hex string")
+	}
+
+	pubKey, err := btcec.ParsePubKey(pkBytes, btcec.S256())
+	if err != nil {
+		return false, errors.Wrap(err, "could not parse public key")
+	}
+
+	sigBytes, err := hex.DecodeString(s.Pop())
+	if err != nil {
+		return false, errors.Wrap(err, "stack value should be a hex string")
+	}
+
+	sig, err := btcec.ParseSignature(sigBytes, btcec.S256())
+	if err != nil {
+		return false, errors.Wrap(err, "could not parse signature")
+	}
+
+	ok := sig.Verify(s.tx, pubKey)
+	if ok {
+		s.Push("1")
+	} else {
+		s.Push("0")
+	}
+
+	return ok, nil
 }
